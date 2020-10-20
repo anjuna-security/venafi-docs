@@ -1,0 +1,388 @@
+= Getting Started with Venafi on Anjuna
+:icons: font
+
+Draft 3
+
+## Overview
+
+This document describes how to use the Venafi Trust Protection Platform to generate and renew certificates for use with a network server. In this example, we show how to use the Anjuna Runtime to protect the TLS certificate for an NGINX http server.
+
+We'll use the following tools to set up and secure the NGINX server:
+
+- *The Venafi Trust-Protection Platform:* to generate, store, and renew certificates.
+- *anjuna-vcert:* a command-line tool that interacts with the Venafi Platform to request certificates. 
+- *anjuna-sgxrun:* a command-line tool that can run programs inside *secure enclaves*. In this tutorial, we'll use it to run the programs `anjuna-vcert` and `nginx`.
+
+In this document, we'll assume that you're setting up NGINX to run in the Anjuna Runtime on Ubuntu 18.04 LTS. The Anjuna Runtime supports other versions of Linux as well, but Ubuntu 18.04 is Anjuna's reference platform, and so, for simplicity, we'll assume that's what you're using.
+
+## Terminology
+
+This section defines a few terms that we'll use with special meanings in this tutorial.
+
+common name::
+The name in which a digital certificate is issued. In certificates issued to identify network servers, this is normally the hostname of the server.
+
+provisioning key::
+A key created by `anjuna-sgxrun` for encrypting files so that they can be read only by a specific program running inside a specific secure enclave.
+
+secure enclave::
+A hardware-protected region of memory set aside by special CPU instructions, which cryptographically protects all data against unauthorized access.
+
+secure host::
+A machine that is not accessible to attack; for example, a machine that is not connected to the Internet.
+
+signature file::
+A file containing cryptographic data that enables the Anjuna Runtime to run a protected program in a secure enclave.
+
+TPP::
+Shorthand for The Venafi Trust Protection Platform.
+
+Venafi Platform::
+Shorthand for The Venafi Trust Protection Platform.
+
+## The `anjuna-vcert` tool
+
+The Venafi Platform provides a command-line tool named `vcert` to create and renew certificates for servers, but it relies on standard I/O to pass and return its inputs and outputs. In order to protect inputs and outputs, the Anjuna Runtime needs to be able to handle them as files. We therefore provide the `anjuna-vcert` tool to perform the same operations as the `vcert` tool, but using files for input and output.
+
+## The `anjuna-sgxrun` tool
+
+A second Anjuna command-line tool, named `anjuna-sgxrun`, sets up secure enclaves and runs programs inside them. We'll use it to set up enclaves for `anjuna-vcert` to obtain and renew certificates, and for NGINX in order to run the HTTP server with the protection of the Anjuna Runtime.
+
+## Set up the Anjuna Runtime
+
+WARNING: Add a link here to a document explaining how to install the Anjuna Runtime.
+
+## Set up the Venafi Trust Protection Platform
+
+WARNING: Obtain getting-started instructions from Venafi for their platform, or write a step-by-step tutorial that we can insert here to get readers started with Venafi.
+
+## Set up the working environment
+
+Next, we'll use `anjuna-sgxrun` to set up our working environment for the Anjuna Runtime. In the terminal, change to the working directory you want to use and run the following command:
+
+----
+$ anjuna-sgxrun --setup
+----
+
+Upon completion, the tool displays a message similar to the following:
+
+----
+"manifest.template.yaml" created
+Setup completed successfully
+----
+
+The file that `anjuna-sgxrun` created, `"manifest.template.yaml"` is a sample *manifest file* that it generates to help you set up and run enclaves. In the next section we'll see how to create our own manifest file for use with the `anjuna-vcert` tool.
+
+## Create a manifest for `anjuna-vcert`
+
+In order to create an enclave, the Anjuna Runtime requires a *manifest file* that supplies configuration parameters. It uses these parameters to configure the enclave when preparing it to run an executable. In this section we'll see how to create a manifest that supplies parameters for an enclave to use with `anjuna-vcert`.
+
+Create a file named `"anjuna-vcert.manifest.template.yaml"`. Add the following contents to the new file:
+
+.anjuna-vcert.manifest.template.yaml
+....
+enclave_size: 2G
+num_threads: 64
+
+environment:
+- name: GOMAXPROCS
+  value: 1
+
+output_encryption:
+  type: SGX_MRSIGNER
+encrypted_output_files:
+- certs/*/private_key.pem
+
+encrypted_input_files:
+- creds.yaml
+....
+
+The name `"anjuna-vcert.manifest.template.yaml"` tells the Anjuna Runtime that the enclave is meant for an executable named `anjuna-vcert`. The fields of the yaml file give parameter values that configure the enclave.
+
+The `GOMAXPROCS` parameter is used to configure the Go runtime for best compatibility with the Anjuna Runtime. You should not normally change it.
+
+The `encrypted_input_files` and `encrypted_output_files` parameters give the pathnames of input and output files relative to the working directory when you run the Anjuna Runtime tools. The Runtime will automatically encrypt output files matching the paths in `encrypted_output_files`. Files in `encrypted_input_files` are input files that have been encrypted in such a way that the Anjuna Runtime knows how to decrypt them. In the case of `anjuna-vcert`, we'll use a special *provisioning key* that we'll create in a later section to encrypt them.
+
+The `output_encryption` parameter tells the Anjuna Runtime which method of encryption to use. The value `SGX_MRSIGNER` specifies an encryption method that is a standard part of the Anjuna Runtime, and which enables all enclaves that are created by the same vendor (that is, signed by the same key) to decrypt each other's files. We'll use that feature to enable `anjuna-vcert` and NGINX to decrypt each other's files, even though they run in separate enclaves.
+
+## Create a manifest for `nginx`
+
+Now create another manifest file for NGINX. As with `anjuna-vcert`, we'll run NGINX inside a secure enclave to protect its sensitive data. We'll need a manifest file to supply the parameters we use to set up the enclave and the Anjuna Runtime.
+
+Create the file `"nginx.manifest.template.yaml"` and populate it with the following contents:
+
+.nginx.manifest.template.yaml
+[subs=+macros]
+....
+enclave_size: 2G
+num_threads: 64
+
+encrypted_input_files:
+- pass:q[*_absolute path to anjuna-vcert directory_*/certs/*_common name_*/private_key.pem]
+....
+
+Replace the text `*_absolute path to anjuna-vcert directory_*` with the absolute path of the directory where the `anjuna_vcert` tool is to store the certificates when it fetches them.
+
+Replace the text `*_common name_*` with the *common name* of the requested certificate. Normally, the common name should be the hostname of the server for which the certificate is issued.
+
+## Compile the manifests
+
+Now compile the `anjuna-vcert` manifest by executing the following command:
+
+----
+$ anjuna-compile-manifest $(which anjuna-vcert)
+----
+
+`anjuna-compile-manifest` compiles the manifest template, converting it to a compiled manifest file that contains data about trusted files (such as the `anjuna-vcert` executable) and shared objects. The Anjuna Runtime uses the compiled manifest together with a *signature file* that we'll create in the next section to run `anjuna-vcert` in a secure enclave.
+
+The Anjuna Runtime identifies the correct manifest file by matching the basename of the executable against manifest files in the working directory--for example, when we ask `anjuna-sgxrun` to run `anjuna-vcert`, it looks for a manifest named `anjuna-vcert.manifest.sgx`.
+
+Now compile the `nginx` manifest the same way:
+
+----
+$ anjuna-compile-manifest $(which nginx)
+----
+
+
+## Create signature files
+
+The outputs of the compilations in the previous sections are a pair of compiled manifest files named `anjuna-vcert.manifest.sgx` and `nginx.manifest.sgx`. We'll now use them to create *unsigned signature files*.
+
+When the Anjuna Runtime is asked to run a program in a secure enclave, it first searches the working directory for a compiled manifest that matches the enclave, and a signed *signature file* that matches both the manifest and the enclave. If these files are missing, or if their cryptographic signatures fail to match, then the SGX-enabled CPU refuses to run the program in the enclave.
+
+We'll use the compiled manifests to generate an unsigned signature file for each enclave. We'll then sign the signature files. We'll use the same signing key to sign the signature file for `anjuna-vcert` and the one for NGINX.
+
+Because we're configuring the enclaves for the two programs with the `SGX_MRSIGNER` method, and because we're signing both signature files with the same key, `anjuna-vcert` and `nginx` will be able to read one another's protected files. No other program can read those files unless we first prepare an enclave for it and sign its signature file with the same key that we used for the `anjuna-vcert` and `nginx` enclaves.
+
+Create the signature file for `anjuna-vcert` by executing the following command:
+
+----
+$ anjuna-sign --measure-only $(which anjuna-vcert)
+----
+
+Now create the signature file for NGINX in the same way:
+
+----
+$ anjuna-sign --measure-only $(which nginx)
+----
+
+## Sign the signature files
+
+In order to enable `anjuna-vcert` and `nginx` to read each other's files when run in their enclaves, we'll sign both signature files with the same key. We want to be certain that no other programs can read these files, though, even if they're running in enclaves created by the Anjuna Runtime. To make that guarantee, we must ensure that the key used to sign the `anjuna-vcert` and `nginx` enclaves is never used to sign another enclave.
+
+We can create a key that exists only on a *secure host*, use it to sign the signature files for `anjuna-vcert` and `nginx`, and then simply never copy the key to any other host, and never use it to sign another signature file. Because the key exists only on the secure host, no one will ever have an opportunity to use it. Because no one can sign a signature file with the same key that signed the files for `anjuna-vcert` and `nginx`, no other program can ever read their protected files.
+
+In this context, a *secure host* is a computer that is never vulnerable to attack by an untrusted third party. An example might be a computer with no network connection--perhaps one secured in a locked room or a safe.
+
+Copy the files `anjuna-vcert.sig` and `nginx.sig` to the secure host, along with the Anjuna tool, `anjuna-sign`.
+
+On the secure host, create a private key that you can use to sign the signature files:
+
+----
+$ openssl genrsa -3 -out enclave-key.pem 3072
+----
+
+With the newly-created private key, use `anjuna-sign` to sign both signature files:
+
+----
+$ anjuna-sign --sign-only --sig-file anjuna-vcert.sig --key ./enclave-key.pem
+$ anjuna-sign --sign-only --sig-file nginx.sig --key ./enclave-key.pem
+----
+
+Now copy the signed signature files, `anjuna-vcert.sig` and `nginx.sig`, back to the host where you originally created the unsigned versions. Replace the unsigned versions of the file with the new signed versions. You can use them now to set up the enclaves to run `anjuna-vcert` and NGINX.
+
+## Create and encrypt a credentials file
+
+We must supply login credentials to the Venafi Platform in order to request and renew certificates. To ensure that attackers never have the opportunity to steal those credentials, we'll create the credentials file on our *secure host* and encrypt the file there before copying it to our working host.
+
+### Create a provisioning key
+
+We'll need a key to use in encrypting the credentials file, and it needs to encrypt the file in such a way that anjuna-vcert can decrypt the file when it's running inside the enclave. To accomplish that, we'll use `anjuna-sgxrun` to create a *provisioning key* for the `anjuna-vcert` enclave. On the SGX-enabled host, run the following command:
+
+----
+$ anjuna-sgxrun --provision anjuna-vcert
+----
+
+The command creates two files:
+
+`anjuna-vcert.provision.key`::
+The provisioning key for the `anjuna-vcert` enclave
+
+`anjuna-vcert.quote.bin`::
+The *SGX quote file* for the enclave.
+
+You can use the *SGX quote file* with the `anjuna-check-attestation` tool to test whether a particular key matches a specific enclave. For example:
+
+----
+$ anjuna-check-attestation                    \
+    --rsa-key-file anjuna-vcert.provision.key \
+    --quote-file anjuna-vcert.quote.bin
+----
+
+### Create the credentials file
+
+On your secure host, create a file named `creds.yaml` with the following contents:
+
+.creds.yaml
+[subs=+macros]
+....
+username: pass:q[*_Your Venafi TPP username_*]
+password: pass:q[*_Your Venafi TPP password_*]
+url: pass:q[*_The URL of your Venafi TPP NGINX host_*]
+....
+
+Replace the *_boldface_* text with the indicated values.
+
+### Encrypt the credentials file
+
+Copy the provisioning key (the file `anjuna-vcert.provision.key` that we created above) and the Anjuna executable `anjuna-prov-seal` to your secure host. Once the key file and the tool are copied to your secure host, use them to encrypt the credentials file by executing the command like this:
+
+----
+$ anjuna-prov-seal                          \
+    --public-key anjuna-vcert.provision.key \
+    creds.yaml                              \
+    --out creds.yaml
+----
+
+Then copy the encrypted `creds.yaml` from the secure host back to the working host. It's now encrypted so that only `anjuna-vcert` can read it, and only when it runs inside the enclave that we set up for it. Because we encrypted `creds.yaml` with the provisioning key that we created along with the enclave for `anjuna-vcert`, any other program will see the file as unreadable. Even `anjuna-vcert` won't be able to read it when running outside the enclave.
+
+## Create a configuration file for `anjuna-vcert`
+
+Next we'll create a configuration file containing arguments for the `anjuna-vcert` tool. (Alternatively, we could pass the arguments to `anjuna-vcert` on the command line.)
+
+Create a file named `"config.yaml"` with the following contents:
+
+.config.yaml
+[subs=+macros]
+....
+common-name: pass:q[*_certificate's common name_*]
+zone: pass:q[*_certificate's Venafi Zone_*]
+id: pass:q[*_certificate's Venafi pickup ID_*]
+....
+
+Replace the text `*_certificate's common name_*` with the *common name* of the requested certificate. Normally, the common name should be the hostname of the server for which the certificate is issued.
+
+Replace the text `*_certificate's Venafi Zone_*` with the *Venafi Zone* where the certificate will be stored. For more information about the *Venafi Zone*, see the section "Set up the Venafi Trust Protection Platform", above.
+
+Replace the text `*_certificate's Venafi pickup ID_*` with the *Venafi pickup ID* that identifies the certificate. For more information about the *Venafi pickup ID*, see the section "Set up the Venafi Trust Protection Platform", above.
+
+As an example, suppose we need a certificate for the `anjuna.test` domain, and we want the Venafi Platform to store it in the zone `TLS Certificates\\Anjuna NGINX` with the ID `\\VED\\Policy\\TLS Certificates\\Anjuna NGINX\\anjuna.test`. Our `config.yaml` would then look like this:
+
+.Example config.yaml
+[subs=+macros]
+....
+common-name: anjuna.test
+zone: "TLS Certificates\\Anjuna NGINX"
+id: "\\VED\\Policy\\TLS Certificates\\Anjuna NGINX\\anjuna.test"
+....
+
+Remember: this is just an example. You should use the correct values for your certificate and Venafi account, not the values shown in this example.
+
+## Enroll a certificate
+
+Now that you've set up the Venafi Trust Protection Platform, set up enclaves for `anjuna-vcert` and `nginx`, and created the credentials and configuration files you need, you can use the Venafi platform to generate and enroll a certificate without ever exposing any sensitive data to attack.
+
+To request the certificate through the Venafi Platform, run `anjuna-vcert` like this:
+
+....
+$ anjuna-sgxrun anjuna-vcert enroll                   \
+    --creds-file creds.yaml                           \
+    --config-file config.yaml
+....
+
+`anuna-vcert` asks the Venafi Platform to generate a certificate, then retrieves it and saves it in the local filesystem at `certs/_common name_/` (within the working directory).
+
+## Renew a certificate
+
+If you've made all the preparations to enroll a certificate, renewing it is quite simple:
+
+....
+$ anjuna-sgxrun anjuna-vcert renew                   \
+    --creds-file creds.yaml                          \
+    --config-file config.yaml
+....
+
+`anuna-vcert` asks the Venafi Platform to renew a certificate, then retrieves the new certificate and saves it in the local filesystem at `certs/_common name_/` (within the working directory).
+
+This command assumes that you want to use the same credentials and configuration file that you used to enroll the certificate. As an alternative, you can instead pass the configuration as on the command-line, and you can identify the certificate using its thumbprint instead of the configuration file. Those options are beyond the scope of this tutorial.
+
+## Configure NGINX
+
+In order to run NGINX under the Anjuna Runtime, we need to disable its master-process and daemonization options. To do that, edit the NGINX configuration file at `/etc/nginx/nginx.conf`. Add the *boldface* lines shown here:
+
+./etc/nginx/nginx.conf
+[subs=+macros]
+....
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+include /etc/nginx/modules-enabled/*.conf;
+pass:q[*master_process off;*]
+pass:q[*daemon off;*]
+
+events {
+        worker_connections 768;
+        # multi_accept on;
+}
+
+http {
+....
+
+You'll also need to configure a site for NGINX to serve. To configure the site, we'll edit its NGINX configuration file to enable HTTPS and disable plain HTTP.
+
+For simplicity's sake, we'll show how to configure the default NGINX site. If you've already configured NGINX to serve a different site then you'll need to edit that site's configuration instead of the default one. In that case, simply substitute your site's configuration file in place of the default NGINX site file.
+
+Edit the default site's configuration file at `/etc/nginx/sites-enabled/default` Add the lines in *boldface type* to tell NGINX where to find the certificate and private key that we fetched in the previous sections. Make sure to use the full absolute paths of the `cert.pem` and `private_key.pem` files.
+
+./etc/nginx/sites-enabled/default
+[subs=+macros]
+....
+pass:q[*ssl_certificate _absolute path to anjuna-vcert dir_/certs/_common name_/cert.pem;*]
+pass:q[*ssl_certificate_key _absolute path to anjuna-vcert dir_/certs/_common name_/private_key.pem;*]
+
+# Default server configuration
+#
+server {
+        listen 80 default_server;
+        listen [::]:80 default_server;
+
+        # SSL configuration
+        #
+        #listen 443 ssl default_server;
+        #listen [::]:443 ssl default_server;
+....
+
+Next, comment out the listener for the HTTP port, and uncomment the one for the HTTPS port:
+
+./etc/nginx/sites-enabled/default
+[subs=+macros]
+....
+ssl_certificate _absolute path to anjuna-vcert dir_/certs/_common name_/cert.pem;
+ssl_certificate_key _absolute path to anjuna-vcert dir_/certs/_common name_/private_key.pem;
+
+# Default server configuration
+#
+server {
+        pass:q[*#listen 80 default_server;*]
+        pass:q[*#listen [::\]:80 default_server;*]
+
+        # SSL configuration
+        #
+        pass:q[*listen 443 ssl default_server;*]
+        pass:q[*listen [::\]:443 ssl default_server;*]
+....
+
+## Run NGINX
+
+Just as we used `anjuna-sgxrun` to execute the `anjuna-vcert` tool, we can now use it to run nginx in its own enclave. Because of the preparations we made in the earlier sections, signing signature files for both `anjuna-vcert` and `nginx` with the same private key, `nginx` will be able to read the private key file retrieved by `anjuna-vcert`.
+
+Run `nginx` with this command:
+
+....
+$ anjuna-sgxrun nginx
+....
+
+Now, thanks to the way that we prepared the secure enclaves in the earlier sections, `nginx` can read the certificate and its private key. Running in its enclave, `nginx` can use these files just as if they were stored in the clear.
+
+To any other process, they are unreadable, protected by strong encryption.
+
