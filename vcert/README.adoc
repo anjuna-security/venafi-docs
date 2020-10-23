@@ -1,7 +1,7 @@
 = Getting Started with Venafi on Anjuna
 :icons: font
 
-Draft 3
+Draft 4
 
 ## Overview
 
