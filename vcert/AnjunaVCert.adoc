@@ -386,3 +386,8 @@ Now, thanks to the way that we prepared the secure enclaves in the earlier secti
 
 To any other process, they are unreadable, protected by strong encryption.
 
+## Update configurations when the system changes
+
+Certain kinds of changes to the protected system require you to update the manifests for the protected programs. If you install a new version of NGINX, or if the operating-system libraries are updated, you must update, recompile, and once again sign the manifests. You must also update the manifests if you install a new version of the Anjuna Runtime or of the `anjuna-vcert` tool.
+
+To update the manifests, simply repeat the steps describes in the sections "Compile the manifests," "Create signature files," and "Sign the signature files", above.
