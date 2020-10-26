@@ -1,7 +1,7 @@
 = Getting Started with Venafi on Anjuna
 :icons: font
 
-Draft 4
+Draft 5
 
 ## Overview
 
@@ -50,11 +50,11 @@ A second Anjuna command-line tool, named `anjuna-sgxrun`, sets up secure enclave
 
 ## Set up the Anjuna Runtime
 
-WARNING: Add a link here to a document explaining how to install the Anjuna Runtime.
+To set up the Anjuna Runtime, follow the instructions in the https://docs.anjuna.io/anjuna-runtime/installing.html[Intalling the Anjuna SGX Runtime] section of the Anjuna Runtime documentation.
 
 ## Set up the Venafi Trust Protection Platform
 
-WARNING: Obtain getting-started instructions from Venafi for their platform, or write a step-by-step tutorial that we can insert here to get readers started with Venafi.
+WARNING: For this section, we need getting-started instructions from Venafi for their platform.
 
 ## Set up the working environment
 
